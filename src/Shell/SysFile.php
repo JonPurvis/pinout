@@ -98,13 +98,19 @@ class SysFile implements Commandable
         // For input pins, read the actual level
         $chip = $this->gpioChip;
         $cmd = sprintf('gpioget -c %s %d 2>/dev/null', $chip, $pinNumber);
-        $output = trim(shell_exec($cmd));
+        $result = @shell_exec($cmd);
+        $output = $result ? trim($result) : '';
 
         if ($output === '') {
             throw new RuntimeException("Failed to read GPIO {$pinNumber}");
         }
 
-        if (str_contains($output, 'active')) {
+        // Parse gpioget output format: "26"=active or "26"=inactive
+        // Or just "1" or "0" or "active"/"inactive"
+        if (str_contains($output, '=active') || 
+            preg_match('/"*\d+"*\s*=\s*active/i', $output) ||
+            trim($output) === '1' || 
+            trim($output) === 'active') {
             return Level::HIGH;
         }
 
