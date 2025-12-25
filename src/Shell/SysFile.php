@@ -11,6 +11,12 @@ use RuntimeException;
 class SysFile implements Commandable
 {
     protected array $exportedPins = [];
+    protected string $gpioChip;
+    
+    public function __construct()
+    {
+        $this->gpioChip = config('pinout.gpio_chip', 'gpiochip0');
+    }
 
     /**
      * Sysfs no longer exists; return empty list
@@ -55,19 +61,23 @@ class SysFile implements Commandable
 
     protected function getFunction(int $pinNumber): Func
     {
-        $cmd = sprintf('gpioinfo gpiochip0 | grep -E "^\\s*line\\s+%d:" 2>/dev/null', $pinNumber);
-        $gpioinfo = shell_exec($cmd);
+        $chip = $this->gpioChip;
+        // Suppress errors and check if line is configured as output
+        $cmd = "gpioinfo $chip 2>&1 | grep -E '^\\s*line\\s+$pinNumber:' || true";
+        $gpioinfo = @shell_exec($cmd);
         
         if ($gpioinfo && str_contains($gpioinfo, 'output')) {
             return Func::OUTPUT;
         }
         
+        // Default to INPUT if we can't determine or if it's not output
         return Func::INPUT;
     }
 
     protected function getLevel(int $pinNumber): Level
     {
-        $cmd = sprintf('gpioget -c gpiochip0 %d 2>/dev/null', $pinNumber);
+        $chip = $this->gpioChip;
+        $cmd = sprintf('gpioget -c %s %d 2>/dev/null', $chip, $pinNumber);
         $output = trim(shell_exec($cmd));
 
         if ($output === '') {
@@ -95,10 +105,12 @@ class SysFile implements Commandable
 
     public function setLevel(int $pinNumber, Level $level): self
     {
+        $chip = $this->gpioChip;
         $value = $level === Level::HIGH ? 1 : 0;
 
         $cmd = sprintf(
-            'gpioset gpiochip0 %d=%d 2>/dev/null',
+            'gpioset %s %d=%d 2>/dev/null',
+            $chip,
             $pinNumber,
             $value
         );
