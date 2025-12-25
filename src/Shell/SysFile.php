@@ -148,10 +148,10 @@ class SysFile implements Commandable
             @unlink($pidFile);
         }
 
-        // Use -s flag to set and hold (keeps pin at the level)
-        // Run in background and save PID so we can kill it later
+        // Use -c flag to specify chip, run in background and save PID
+        // gpioset holds the pin HIGH/LOW as long as the process runs
         $cmd = sprintf(
-            'gpioset -s %s %d=%d >/dev/null 2>&1 & echo $!',
+            'gpioset -c %s %d=%d >/dev/null 2>&1 & echo $!',
             $chip,
             $pinNumber,
             $value
