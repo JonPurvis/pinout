@@ -55,8 +55,13 @@ class SysFile implements Commandable
 
     protected function getFunction(int $pinNumber): Func
     {
-        // libgpiod does not expose direction cleanly via CLI
-        // Best-effort assumption: input unless explicitly driven
+        $cmd = sprintf('gpioinfo gpiochip0 | grep -E "^\\s*line\\s+%d:" 2>/dev/null', $pinNumber);
+        $gpioinfo = shell_exec($cmd);
+        
+        if ($gpioinfo && str_contains($gpioinfo, 'output')) {
+            return Func::OUTPUT;
+        }
+        
         return Func::INPUT;
     }
 
@@ -78,8 +83,13 @@ class SysFile implements Commandable
 
     public function setFunction(int $pinNumber, Func $func): self
     {
-        // Direction is implicit in libgpiod
-        // We accept the call for API compatibility
+        // With libgpiod, setting a level implicitly makes the pin output
+        // So when setting to OUTPUT, we set it to LOW by default
+        if ($func === Func::OUTPUT) {
+            return $this->setLevel($pinNumber, Level::LOW);
+        }
+        
+        // For INPUT, direction is implicit - just reading makes it input
         return $this;
     }
 
