@@ -73,7 +73,7 @@ class SysFile implements Commandable
             return Level::HIGH;
         }
 
-        Level::LOW;
+        return Level::LOW;
     }
 
     public function setFunction(int $pinNumber, Func $func): self
