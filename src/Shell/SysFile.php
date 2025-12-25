@@ -62,16 +62,18 @@ class SysFile implements Commandable
 
     protected function getLevel(int $pinNumber): Level
     {
-        $cmd = sprintf('gpioget gpiochip0 %d 2>/dev/null', $pinNumber);
-        $value = trim(shell_exec($cmd));
+        $cmd = sprintf('gpioget -c gpiochip0 %d 2>/dev/null', $pinNumber);
+        $output = trim(shell_exec($cmd));
 
-        if ($value === '') {
+        if ($output === '') {
             throw new RuntimeException("Failed to read GPIO {$pinNumber}");
         }
 
-        return $value === '0'
-            ? Level::LOW
-            : Level::HIGH;
+        if (str_contains($output, 'active')) {
+            return Level::HIGH;
+        }
+
+        Level::LOW;
     }
 
     public function setFunction(int $pinNumber, Func $func): self
