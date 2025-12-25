@@ -86,6 +86,16 @@ class SysFile implements Commandable
 
     protected function getLevel(int $pinNumber): Level
     {
+        // Check if this is an output pin - if so, return cached value
+        $outputPins = Cache::get('pinout.output_pins', []);
+        if (in_array($pinNumber, $outputPins, true)) {
+            $cached = Cache::get("gpio.output.$pinNumber", null);
+            if ($cached !== null) {
+                return $cached;
+            }
+        }
+        
+        // For input pins, read the actual level
         $chip = $this->gpioChip;
         $cmd = sprintf('gpioget -c %s %d 2>/dev/null', $chip, $pinNumber);
         $output = trim(shell_exec($cmd));
@@ -128,14 +138,35 @@ class SysFile implements Commandable
         $chip = $this->gpioChip;
         $value = $level === Level::HIGH ? 1 : 0;
 
+        // Kill any existing gpioset process for this pin to avoid accumulation
+        $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
+        if (file_exists($pidFile)) {
+            $oldPid = trim(file_get_contents($pidFile));
+            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                posix_kill((int)$oldPid, SIGTERM);
+            }
+            @unlink($pidFile);
+        }
+
+        // Use -s flag to set and hold (keeps pin at the level)
+        // Run in background and save PID so we can kill it later
         $cmd = sprintf(
-            'gpioset %s %d=%d 2>/dev/null',
+            'gpioset -s %s %d=%d >/dev/null 2>&1 & echo $!',
             $chip,
             $pinNumber,
             $value
         );
 
-        shell_exec($cmd);
+        $pid = trim(shell_exec($cmd));
+        if ($pid) {
+            file_put_contents($pidFile, $pid);
+        }
+        
+        // Cache the level we set
+        Cache::put("gpio.output.$pinNumber", $level);
+        
+        // Small delay to ensure command starts
+        usleep(10000); // 10ms
 
         return $this;
     }

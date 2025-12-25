@@ -32,6 +32,11 @@ class PinService implements ManagesPins
     {
         $this->commandTool->setLevel($pin->pinNumber, $level);
 
+        // Refresh the pin to get the updated level
+        $updatedPin = $this->pin($pin->pinNumber);
+        $pin->level = $updatedPin->level;
+        $pin->func = $updatedPin->func;
+
         return $pin;
     }
 
