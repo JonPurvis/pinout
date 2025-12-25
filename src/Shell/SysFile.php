@@ -6,6 +6,7 @@ use DanJohnson95\Pinout\Collections\PinCollection;
 use DanJohnson95\Pinout\Entities\Pin;
 use DanJohnson95\Pinout\Enums\Func;
 use DanJohnson95\Pinout\Enums\Level;
+use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 
 class SysFile implements Commandable
@@ -62,8 +63,9 @@ class SysFile implements Commandable
 
     protected function getFunction(int $pinNumber): Func
     {
-        // Track pins we've set as output since gpioinfo may not work reliably
-        if (in_array($pinNumber, $this->outputPins, true)) {
+        // Track pins we've set as output using cache (persists across commands)
+        $outputPins = Cache::get('pinout.output_pins', []);
+        if (in_array($pinNumber, $outputPins, true)) {
             return Func::OUTPUT;
         }
         
@@ -73,7 +75,8 @@ class SysFile implements Commandable
         $gpioinfo = @shell_exec($cmd);
         
         if ($gpioinfo && str_contains($gpioinfo, 'output')) {
-            $this->outputPins[] = $pinNumber;
+            $outputPins[] = $pinNumber;
+            Cache::put('pinout.output_pins', array_unique($outputPins));
             return Func::OUTPUT;
         }
         
@@ -103,14 +106,18 @@ class SysFile implements Commandable
         // With libgpiod, setting a level implicitly makes the pin output
         // So when setting to OUTPUT, we set it to LOW by default
         if ($func === Func::OUTPUT) {
-            if (!in_array($pinNumber, $this->outputPins, true)) {
-                $this->outputPins[] = $pinNumber;
+            $outputPins = Cache::get('pinout.output_pins', []);
+            if (!in_array($pinNumber, $outputPins, true)) {
+                $outputPins[] = $pinNumber;
+                Cache::put('pinout.output_pins', array_unique($outputPins));
             }
             return $this->setLevel($pinNumber, Level::LOW);
         }
         
         // For INPUT, remove from output tracking
-        $this->outputPins = array_values(array_filter($this->outputPins, fn($p) => $p !== $pinNumber));
+        $outputPins = Cache::get('pinout.output_pins', []);
+        $outputPins = array_values(array_filter($outputPins, fn($p) => $p !== $pinNumber));
+        Cache::put('pinout.output_pins', $outputPins);
         
         // For INPUT, direction is implicit - just reading makes it input
         return $this;
