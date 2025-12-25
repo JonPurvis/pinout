@@ -6,39 +6,31 @@ use DanJohnson95\Pinout\Collections\PinCollection;
 use DanJohnson95\Pinout\Entities\Pin;
 use DanJohnson95\Pinout\Enums\Func;
 use DanJohnson95\Pinout\Enums\Level;
+use RuntimeException;
 
 class SysFile implements Commandable
 {
     protected array $exportedPins = [];
-    protected string $baseDirectory = "/sys/class/gpio";
 
     /**
-     * @return array<Pin>
+     * Sysfs no longer exists; return empty list
+     *
+     * @return array<int>
      */
     public function getExportedPins(): array
     {
-        $exportedPins = [];
-        $exportedPinsFile = fopen("/sys/class/gpio/export", "r");
-
-        while (($line = fgets($exportedPinsFile)) !== false) {
-            $exportedPins[] = (int) $line;
-        }
-
-        fclose($exportedPinsFile);
-
-        return $exportedPins;
+        return [];
     }
 
     protected function pinIsExported(int $pinNumber): bool
     {
-        return in_array($pinNumber, $this->exportedPins);
+        // libgpiod does not require exporting
+        return true;
     }
 
     public function exportPin(int $pinNumber): void
     {
-        shell_exec('gpio export ' . $pinNumber . ' output');
-
-        $this->exportedPins[] = $pinNumber;
+        // No-op: libgpiod does not use exporting
     }
 
     public function getAll(array $pinNumbers): PinCollection
@@ -54,10 +46,6 @@ class SysFile implements Commandable
 
     public function get(int $pinNumber): Pin
     {
-        if (! $this->pinIsExported($pinNumber)) {
-            $this->exportPin($pinNumber);
-        }
-
         return Pin::make(
             pinNumber: $pinNumber,
             level: $this->getLevel($pinNumber),
@@ -67,59 +55,43 @@ class SysFile implements Commandable
 
     protected function getFunction(int $pinNumber): Func
     {
-        $functionFile = fopen("{$this->baseDirectory}/gpio{$pinNumber}/direction", "r");
-        $function = fread($functionFile, 3);
-        fclose($functionFile);
-
-        if ($function === "in") {
-            return Func::INPUT;
-        } else {
-            return Func::OUTPUT;
-        }
+        // libgpiod does not expose direction cleanly via CLI
+        // Best-effort assumption: input unless explicitly driven
+        return Func::INPUT;
     }
 
     protected function getLevel(int $pinNumber): Level
     {
-        $levelFile = fopen("{$this->baseDirectory}/gpio{$pinNumber}/value", "r");
-        $level = fread($levelFile, 1);
-        fclose($levelFile);
+        $cmd = sprintf('gpioget gpiochip0 %d 2>/dev/null', $pinNumber);
+        $value = trim(shell_exec($cmd));
 
-        if ($level === "0") {
-            return Level::LOW;
-        } else {
-            return Level::HIGH;
+        if ($value === '') {
+            throw new RuntimeException("Failed to read GPIO {$pinNumber}");
         }
+
+        return $value === '0'
+            ? Level::LOW
+            : Level::HIGH;
     }
 
     public function setFunction(int $pinNumber, Func $func): self
     {
-        if (! $this->pinIsExported($pinNumber)) {
-            $this->exportPin($pinNumber);
-        }
-
-        // Now that the pin is exported, we can set its function
-        $functionFile = fopen("{$this->baseDirectory}/gpio{$pinNumber}/direction", "w");
-
-        if ($func === Func::INPUT) {
-            $func = "in";
-        } else {
-            $func = "out";
-        }
-
-        fwrite($functionFile, $func);
-
+        // Direction is implicit in libgpiod
+        // We accept the call for API compatibility
         return $this;
     }
 
     public function setLevel(int $pinNumber, Level $level): self
     {
-        if (! $this->pinIsExported($pinNumber)) {
-            $this->exportPin($pinNumber);
-        }
+        $value = $level === Level::HIGH ? 1 : 0;
 
-        // Now that the pin is exported, we can set its level
-        $levelFile = fopen("{$this->baseDirectory}/gpio{$pinNumber}/value", "w");
-        fwrite($levelFile, $level->value);
+        $cmd = sprintf(
+            'gpioset gpiochip0 %d=%d 2>/dev/null',
+            $pinNumber,
+            $value
+        );
+
+        shell_exec($cmd);
 
         return $this;
     }
