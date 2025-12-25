@@ -12,6 +12,7 @@ class SysFile implements Commandable
 {
     protected array $exportedPins = [];
     protected string $gpioChip;
+    protected array $outputPins = [];
     
     public function __construct()
     {
@@ -61,12 +62,18 @@ class SysFile implements Commandable
 
     protected function getFunction(int $pinNumber): Func
     {
+        // Track pins we've set as output since gpioinfo may not work reliably
+        if (in_array($pinNumber, $this->outputPins, true)) {
+            return Func::OUTPUT;
+        }
+        
+        // Try to detect using gpioinfo if available
         $chip = $this->gpioChip;
-        // Suppress errors and check if line is configured as output
-        $cmd = "gpioinfo $chip 2>&1 | grep -E '^\\s*line\\s+$pinNumber:' || true";
+        $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
         $gpioinfo = @shell_exec($cmd);
         
         if ($gpioinfo && str_contains($gpioinfo, 'output')) {
+            $this->outputPins[] = $pinNumber;
             return Func::OUTPUT;
         }
         
@@ -96,8 +103,14 @@ class SysFile implements Commandable
         // With libgpiod, setting a level implicitly makes the pin output
         // So when setting to OUTPUT, we set it to LOW by default
         if ($func === Func::OUTPUT) {
+            if (!in_array($pinNumber, $this->outputPins, true)) {
+                $this->outputPins[] = $pinNumber;
+            }
             return $this->setLevel($pinNumber, Level::LOW);
         }
+        
+        // For INPUT, remove from output tracking
+        $this->outputPins = array_values(array_filter($this->outputPins, fn($p) => $p !== $pinNumber));
         
         // For INPUT, direction is implicit - just reading makes it input
         return $this;
