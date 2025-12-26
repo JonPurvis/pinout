@@ -114,27 +114,36 @@ class LibGPIODv2 implements Commandable
         $value = $level->value;
         $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
 
-        // Kill existing gpioset process for this pin (synchronous but fast)
-        // First try by PID file if it exists
+        // Kill ALL gpioset processes for this pin aggressively
+        shell_exec("pkill -9 -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
+        
+        // Kill any batch processes
+        $globPattern = "/tmp/pinout_gpioset_batch_*.pid";
+        $batchFiles = glob($globPattern);
+        if ($batchFiles) {
+            foreach ($batchFiles as $batchFile) {
+                $filename = basename($batchFile, '.pid');
+                $filePins = explode('_', str_replace('pinout_gpioset_batch_', '', $filename));
+                if (in_array($pinNumber, array_map('intval', $filePins))) {
+                    $oldPid = trim(@file_get_contents($batchFile));
+                    if (is_numeric($oldPid)) {
+                        posix_kill((int)$oldPid, SIGKILL);
+                    }
+                    @unlink($batchFile);
+                }
+            }
+        }
+        
+        // Also kill by PID file if it exists
         if (file_exists($pidFile)) {
             $oldPid = trim(@file_get_contents($pidFile));
-            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
-                posix_kill((int)$oldPid, SIGTERM);
-                usleep(10000); // 10ms - brief wait for graceful termination
-                if (posix_kill((int)$oldPid, 0)) {
-                    posix_kill((int)$oldPid, SIGKILL);
-                }
+            if (is_numeric($oldPid)) {
+                @posix_kill((int)$oldPid, SIGKILL);
             }
             @unlink($pidFile);
         }
-        
-        // Also kill by pattern to catch any stragglers (synchronous)
-        shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
-        
-        // Kill any batch processes that might include this pin
-        shell_exec("pkill -f 'pinout_gpioset_batch.*$pinNumber' 2>/dev/null");
 
-        // Start new gpioset process - shell_exec with & backgrounds properly
+        // Start new gpioset process immediately
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
