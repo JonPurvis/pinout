@@ -144,33 +144,17 @@ class LibGPIODv2 implements Commandable
         shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
         usleep(10000); // 10ms
 
-        // Start new gpioset process - fully detached using proc_open for clean exit
+        // Start new gpioset process - use exec() which handles backgrounding better
         $pidCmd = sprintf(
-            'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
+            'nohup setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
             $this->gpioChip,
             $pinNumber,
             $value
         );
         
-        // Use proc_open and immediately close to fully detach from PHP process
-        $descriptorspec = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', '/dev/null', 'w'],
-            2 => ['file', '/dev/null', 'w'],
-        ];
-        
-        $process = proc_open($pidCmd, $descriptorspec, $pipes);
-        if (is_resource($process)) {
-            // Close pipes immediately
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
-            }
-            // Close process immediately - don't wait
-            proc_close($process);
-        }
+        // exec() with output redirection - returns immediately
+        exec($pidCmd . ' >/dev/null 2>&1');
         
         // Don't wait for PID file - let it happen asynchronously
         // This prevents blocking Tinker exit. The process will start in background.
@@ -266,33 +250,16 @@ class LibGPIODv2 implements Commandable
         sort($sortedPins);
         $batchPidFile = "/tmp/pinout_gpioset_batch_" . implode('_', $sortedPins) . ".pid";
         
-        // Start single gpioset process for all pins
-        // Use proc_open for full detachment from PHP process
+        // Start single gpioset process for all pins - use exec() which handles backgrounding better
         $pidCmd = sprintf(
-            'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
+            'nohup setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
             escapeshellarg($batchPidFile),
             escapeshellarg($this->gpioChip),
             $pinArgsStr // Already space-separated arguments: "12=1 13=0 16=1"
         );
         
-        // Use proc_open and immediately close to fully detach from PHP process
-        $descriptorspec = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', '/dev/null', 'w'],
-            2 => ['file', '/dev/null', 'w'],
-        ];
-        
-        $process = proc_open($pidCmd, $descriptorspec, $pipes);
-        if (is_resource($process)) {
-            // Close pipes immediately
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
-            }
-            // Close process immediately - don't wait
-            proc_close($process);
-        }
+        // exec() with output redirection - returns immediately
+        exec($pidCmd . ' >/dev/null 2>&1');
         
         // Don't wait for PID file - let it happen asynchronously
         // This prevents blocking Tinker exit. The process will start in background.
