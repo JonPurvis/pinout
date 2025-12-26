@@ -15,6 +15,12 @@ class LibGPIODv2 implements Commandable
     public function __construct()
     {
         $this->gpioChip = config('pinout.gpio_chip');
+        
+        // Ignore child process signals so PHP doesn't wait for background gpioset processes
+        // This allows Tinker to exit cleanly
+        if (function_exists('pcntl_signal')) {
+            @pcntl_signal(SIGCHLD, SIG_IGN);
+        }
     }
 
     public function getAll(array $pinNumbers): PinCollection
