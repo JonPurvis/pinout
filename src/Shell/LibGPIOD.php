@@ -42,14 +42,24 @@ class LibGPIOD implements Commandable
         $chip = $this->gpioChip;
 
         // Check if direction is output
-        $gpioinfo = shell_exec("gpioinfo $chip | grep -E '^\\s*line\\s+$pinNumber:'");
+        $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
+        $gpioinfo = @shell_exec($cmd);
 
         if (str_contains($gpioinfo, 'output')) {
             return $this->cache($pinNumber);
         }
 
         // Input — safe to read
-        $level = trim(shell_exec("gpioget $chip $pinNumber"));
+        $cmd = sprintf('gpioget -c %s %d 2>/dev/null', $chip, $pinNumber);
+        $result = @shell_exec($cmd);
+        $level = $result ? trim($result) : '';
+        
+        // Parse gpioget output format: "26"=active or "26"=inactive
+        if (str_contains($level, '=active') || preg_match('/"*\d+"*\s*=\s*active/i', $level)) {
+            $level = '1';
+        } elseif (str_contains($level, '=inactive') || preg_match('/"*\d+"*\s*=\s*inactive/i', $level)) {
+            $level = '0';
+        }
 
         return match ($level) {
             "0" => Level::LOW,
@@ -62,7 +72,8 @@ class LibGPIOD implements Commandable
     {
         $chip = $this->gpioChip;
 
-        $gpioinfo = shell_exec("gpioinfo $chip | grep -E '^\\s*line\\s+$pinNumber:'");
+        $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
+        $gpioinfo = @shell_exec($cmd);
 
         if (str_contains($gpioinfo, 'output')) {
             return Func::OUTPUT;
@@ -78,7 +89,7 @@ class LibGPIOD implements Commandable
     ): self {
         if ($func === Func::INPUT) {
             $chip = $this->gpioChip;
-            shell_exec("gpioget $chip $pinNumber");
+            @shell_exec("gpioget -c $chip $pinNumber 2>/dev/null");
             return $this;
         }
 
@@ -96,17 +107,38 @@ class LibGPIOD implements Commandable
     public function setLevel(int $pinNumber, Level $level): self
     {
         $chip = $this->gpioChip;
-        $value = $level->value;
+        $value = $level === Level::HIGH ? 1 : 0;
 
-        $command = "gpioset $chip $pinNumber=$value";
-        exec($command, $output, $exitCode);
-
-        if ($exitCode !== 0) {
-            throw new \Exception("Failed to set GPIO level on line $pinNumber. Exit code: $exitCode");
+        // Kill any existing gpioset process for this pin to avoid accumulation
+        $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
+        if (file_exists($pidFile)) {
+            $oldPid = trim(file_get_contents($pidFile));
+            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                posix_kill((int)$oldPid, SIGTERM);
+            }
+            @unlink($pidFile);
         }
 
-        // Flash level into session
+        // Use -c flag to specify chip, run in background and save PID
+        // gpioset holds the pin HIGH/LOW as long as the process runs
+        $cmd = sprintf(
+            'gpioset -c %s %d=%d >/dev/null 2>&1 & echo $!',
+            $chip,
+            $pinNumber,
+            $value
+        );
+
+        $pid = trim(shell_exec($cmd));
+        if ($pid) {
+            file_put_contents($pidFile, $pid);
+        }
+
+        // Cache the level we set
         $this->cache($pinNumber, $level);
+        
+        // Small delay to ensure command starts
+        usleep(10000); // 10ms
+
         return $this;
     }
 
