@@ -108,43 +108,37 @@ class LibGPIODv2 implements Commandable
                 // Try SIGTERM first (graceful)
                 if (posix_kill((int)$oldPid, 0)) {
                     posix_kill((int)$oldPid, SIGTERM);
-                    usleep(50000); // 50ms
+                    usleep(100000); // 100ms - wait longer for process to die
                     // If still running, force kill
                     if (posix_kill((int)$oldPid, 0)) {
                         posix_kill((int)$oldPid, SIGKILL);
-                        usleep(10000); // 10ms
+                        usleep(50000); // 50ms
                     }
                 }
             }
             @unlink($pidFile);
         }
 
+        // Also kill any gpioset processes for this pin that might not have PID file
+        shell_exec("pkill -f 'gpioset.*$pinNumber' 2>/dev/null");
+        usleep(50000); // 50ms
+
         // v2: Run in background to hold pin (gpioset holds pin until process exits)
         // Use setsid to create new session and fully detach from parent
-        // Write PID to file immediately, then start process
-        $pidCmd = sprintf(
-            'setsid sh -c "echo \\$\\$ > %s; exec gpioset -c %s %d=%d" </dev/null >/dev/null 2>&1 &',
-            $pidFile,
+        $cmd = sprintf(
+            'setsid gpioset -c %s %d=%d </dev/null >/dev/null 2>&1 &',
             $this->gpioChip,
             $pinNumber,
             $value
         );
         
-        shell_exec($pidCmd);
+        // Run command and capture PID
+        $output = shell_exec("($cmd) && sleep 0.1 && ps aux | grep '[g]pioset.*$pinNumber' | awk '{print \$2}' | head -1");
+        $pid = trim($output);
         
-        // Wait for PID file to be created and read it
-        $attempts = 0;
-        while (!file_exists($pidFile) && $attempts < 10) {
-            usleep(10000); // 10ms
-            $attempts++;
-        }
-        
-        if (file_exists($pidFile)) {
-            $pid = trim(file_get_contents($pidFile));
-            if ($pid && is_numeric($pid) && $pid > 0) {
-                // Small delay to ensure process starts and pin state changes
-                usleep(50000); // 50ms
-            }
+        if ($pid && is_numeric($pid) && $pid > 0) {
+            file_put_contents($pidFile, $pid);
+            usleep(50000); // 50ms to ensure pin state changes
         }
 
         $this->cache($pinNumber, $level);
