@@ -103,8 +103,9 @@ class LibGPIODv2 implements Commandable
         }
 
         // v2: Run in background to hold pin (gpioset holds pin until process exits)
+        // Use nohup and setsid to fully detach from parent, redirect all I/O
         $cmd = sprintf(
-            'setsid gpioset -c %s %d=%d >/dev/null 2>&1 & echo $!',
+            'nohup setsid sh -c "gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" & echo $!',
             $this->gpioChip,
             $pinNumber,
             $value
@@ -113,6 +114,8 @@ class LibGPIODv2 implements Commandable
         $pid = trim(shell_exec($cmd));
         if ($pid) {
             file_put_contents($pidFile, $pid);
+            // Disown the process to fully detach from shell
+            shell_exec("disown $pid 2>/dev/null");
         }
 
         $this->cache($pinNumber, $level);
