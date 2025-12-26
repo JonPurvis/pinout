@@ -39,10 +39,16 @@ class LibGPIODv2 implements Commandable
 
     protected function getLevel(int $pinNumber): Level
     {
-        // Check if direction is output
+        // Check cache first - if we've set this pin as output, use cached value
+        $cached = Cache::get("gpio.output.$pinNumber", null);
+        if ($cached !== null) {
+            return $cached;
+        }
+
+        // Check if direction is output via gpioinfo
         $gpioinfo = shell_exec("gpioinfo -c {$this->gpioChip} | grep -E '^\\s*line\\s+$pinNumber:'");
 
-        if (str_contains($gpioinfo, 'output')) {
+        if ($gpioinfo && str_contains($gpioinfo, 'output')) {
             return $this->cache($pinNumber);
         }
 
