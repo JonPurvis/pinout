@@ -55,13 +55,26 @@ class LibGPIODv2 implements Commandable
         }
 
         // Input — safe to read
-        $level = trim(shell_exec("gpioget -c {$this->gpioChip} $pinNumber"));
+        $result = shell_exec("gpioget -c {$this->gpioChip} $pinNumber 2>&1");
+        $level = trim($result ?: '');
 
-        return match ($level) {
-            "0" => Level::LOW,
-            "1" => Level::HIGH,
-            default => throw new \Exception("Unknown GPIO level '$level' on line $pinNumber"),
-        };
+        // Handle various gpioget output formats:
+        // - "19"=active or "19"=inactive (with quotes)
+        // - active or inactive (without quotes)
+        // - 1 or 0 (numeric)
+        if (preg_match('/=?(active|1)$/i', $level)) {
+            return Level::HIGH;
+        }
+        if (preg_match('/=?(inactive|0)$/i', $level)) {
+            return Level::LOW;
+        }
+        
+        // If output is empty or unrecognized, default to LOW for unconfigured pins
+        if (empty($level)) {
+            return Level::LOW;
+        }
+        
+        throw new \Exception("Unknown GPIO level '$level' on line $pinNumber");
     }
 
     public function getFunction(int $pinNumber): Func
@@ -124,21 +137,31 @@ class LibGPIODv2 implements Commandable
         usleep(50000); // 50ms
 
         // v2: Run in background to hold pin (gpioset holds pin until process exits)
-        // Use setsid to create new session and fully detach from parent
-        $cmd = sprintf(
-            'setsid gpioset -c %s %d=%d </dev/null >/dev/null 2>&1 &',
+        // Use setsid + nohup + bash -c to fully detach from parent process
+        // This prevents Tinker from hanging when exiting
+        $pidCmd = sprintf(
+            'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
+            $pidFile,
             $this->gpioChip,
             $pinNumber,
             $value
         );
         
-        // Run command and capture PID
-        $output = shell_exec("($cmd) && sleep 0.1 && ps aux | grep '[g]pioset.*$pinNumber' | awk '{print \$2}' | head -1");
-        $pid = trim($output);
+        shell_exec($pidCmd);
         
-        if ($pid && is_numeric($pid) && $pid > 0) {
-            file_put_contents($pidFile, $pid);
-            usleep(50000); // 50ms to ensure pin state changes
+        // Wait for PID file to be created and read it
+        $attempts = 0;
+        while (!file_exists($pidFile) && $attempts < 10) {
+            usleep(10000); // 10ms
+            $attempts++;
+        }
+        
+        if (file_exists($pidFile)) {
+            $pid = trim(file_get_contents($pidFile));
+            if ($pid && is_numeric($pid) && $pid > 0) {
+                // Small delay to ensure process starts and pin state changes
+                usleep(50000); // 50ms
+            }
         }
 
         $this->cache($pinNumber, $level);
