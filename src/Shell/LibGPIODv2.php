@@ -121,18 +121,23 @@ class LibGPIODv2 implements Commandable
 
         // v2: Run in background to hold pin (gpioset holds pin until process exits)
         // Use setsid to create new session and fully detach from parent
+        // Run in subshell to ensure proper backgrounding
         $cmd = sprintf(
-            '(setsid gpioset -c %s %d=%d </dev/null >/dev/null 2>&1 & echo $!) 2>/dev/null',
+            'bash -c "(setsid gpioset -c %s %d=%d </dev/null >/dev/null 2>&1 &); echo \\$!" 2>/dev/null',
             $this->gpioChip,
             $pinNumber,
             $value
         );
 
-        $pid = trim(shell_exec($cmd));
+        $output = trim(shell_exec($cmd));
+        // Extract PID from output (might have extra output)
+        preg_match('/(\d+)/', $output, $matches);
+        $pid = $matches[1] ?? null;
+        
         if ($pid && is_numeric($pid)) {
             file_put_contents($pidFile, $pid);
-            // Small delay to ensure process starts
-            usleep(10000); // 10ms
+            // Small delay to ensure process starts and pin state changes
+            usleep(50000); // 50ms
         }
 
         $this->cache($pinNumber, $level);
