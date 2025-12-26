@@ -114,21 +114,13 @@ class LibGPIODv2 implements Commandable
         $value = $level->value;
         $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
 
-        // Kill existing gpioset process for this pin (async - don't wait)
-        // Kill by PID file first, then by pattern to catch any stragglers
-        if (file_exists($pidFile)) {
-            $oldPid = trim(file_get_contents($pidFile));
-            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
-                posix_kill((int)$oldPid, SIGTERM);
-            }
-            @unlink($pidFile);
-        }
-        
-        // Kill any gpioset processes for this pin (async - runs in background)
-        shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null &");
+        // Kill existing gpioset process for this pin (non-blocking)
+        // Background pkill to avoid any blocking
+        exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null >/dev/null 2>&1 &");
+        @unlink($pidFile);
 
-        // Start new gpioset process immediately (don't wait for old one to die)
-        // The new process will take over the pin state
+        // Start new gpioset process immediately - background with & to prevent blocking
+        // exec() with & and output redirection is the fastest way to spawn async processes
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
@@ -137,9 +129,10 @@ class LibGPIODv2 implements Commandable
             $value
         );
         
-        shell_exec($pidCmd);
+        // exec() with & backgrounds immediately, allowing rapid sequential calls
+        exec($pidCmd . ' >/dev/null 2>&1');
 
-        // Update cache immediately - don't wait for PID file or process startup
+        // Update cache immediately
         $this->cache($pinNumber, $level);
         return $this;
     }
