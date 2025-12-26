@@ -100,7 +100,7 @@ class LibGPIODv2 implements Commandable
 
         return $this->setLevel(
             $pinNumber,
-            $level !== null ?: Level::LOW
+            $level ?? Level::LOW
         );
     }
 
@@ -114,31 +114,21 @@ class LibGPIODv2 implements Commandable
         $value = $level->value;
         $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
 
-        // Kill existing gpioset process for this pin
+        // Kill existing gpioset process for this pin (async - don't wait)
+        // Kill by PID file first, then by pattern to catch any stragglers
         if (file_exists($pidFile)) {
             $oldPid = trim(file_get_contents($pidFile));
-            if (is_numeric($oldPid)) {
-                // Try SIGTERM first (graceful)
-                if (posix_kill((int)$oldPid, 0)) {
-                    posix_kill((int)$oldPid, SIGTERM);
-                    usleep(100000); // 100ms - wait longer for process to die
-                    // If still running, force kill
-                    if (posix_kill((int)$oldPid, 0)) {
-                        posix_kill((int)$oldPid, SIGKILL);
-                        usleep(50000); // 50ms
-                    }
-                }
+            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                posix_kill((int)$oldPid, SIGTERM);
             }
             @unlink($pidFile);
         }
+        
+        // Kill any gpioset processes for this pin (async - runs in background)
+        shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null &");
 
-        // Also kill any gpioset processes for this pin that might not have PID file
-        shell_exec("pkill -f 'gpioset.*$pinNumber' 2>/dev/null");
-        usleep(50000); // 50ms
-
-        // v2: Run in background to hold pin (gpioset holds pin until process exits)
-        // Use setsid + nohup + bash -c to fully detach from parent process
-        // This prevents Tinker from hanging when exiting
+        // Start new gpioset process immediately (don't wait for old one to die)
+        // The new process will take over the pin state
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
@@ -148,22 +138,8 @@ class LibGPIODv2 implements Commandable
         );
         
         shell_exec($pidCmd);
-        
-        // Wait for PID file to be created and read it
-        $attempts = 0;
-        while (!file_exists($pidFile) && $attempts < 10) {
-            usleep(10000); // 10ms
-            $attempts++;
-        }
-        
-        if (file_exists($pidFile)) {
-            $pid = trim(file_get_contents($pidFile));
-            if ($pid && is_numeric($pid) && $pid > 0) {
-                // Small delay to ensure process starts and pin state changes
-                usleep(50000); // 50ms
-            }
-        }
 
+        // Update cache immediately - don't wait for PID file or process startup
         $this->cache($pinNumber, $level);
         return $this;
     }
