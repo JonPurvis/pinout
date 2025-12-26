@@ -50,9 +50,19 @@ class LibGPIOD implements Commandable
         }
 
         // Input — safe to read
-        $cmd = sprintf('gpioget -c %s %d 2>/dev/null', $chip, $pinNumber);
+        // Capture both stdout and stderr to see actual errors
+        $cmd = sprintf('gpioget -c %s %d 2>&1', $chip, $pinNumber);
         $result = @shell_exec($cmd);
-        $level = $result ? trim($result) : '';
+        $output = $result ? trim($result) : '';
+        
+        // Check for error messages in output
+        if ($output === '' || str_contains($output, 'cannot find') || str_contains($output, 'error') || str_contains($output, 'Error')) {
+            // Pin might not be configured yet - return LOW as default for unconfigured pins
+            // This allows pins to be configured without errors
+            return Level::LOW;
+        }
+        
+        $level = $output;
         
         // Parse gpioget output format: "26"=active or "26"=inactive
         if (str_contains($level, '=active') || preg_match('/"*\d+"*\s*=\s*active/i', $level)) {
