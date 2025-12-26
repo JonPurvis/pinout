@@ -114,11 +114,27 @@ class LibGPIODv2 implements Commandable
         $value = $level->value;
         $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
 
-        // Kill existing gpioset process for this pin (non-blocking)
-        shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null &");
-        @unlink($pidFile);
+        // Kill existing gpioset process for this pin (synchronous but fast)
+        // First try by PID file if it exists
+        if (file_exists($pidFile)) {
+            $oldPid = trim(@file_get_contents($pidFile));
+            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                posix_kill((int)$oldPid, SIGTERM);
+                usleep(10000); // 10ms - brief wait for graceful termination
+                if (posix_kill((int)$oldPid, 0)) {
+                    posix_kill((int)$oldPid, SIGKILL);
+                }
+            }
+            @unlink($pidFile);
+        }
+        
+        // Also kill by pattern to catch any stragglers (synchronous)
+        shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
+        
+        // Kill any batch processes that might include this pin
+        shell_exec("pkill -f 'pinout_gpioset_batch.*$pinNumber' 2>/dev/null");
 
-        // Start new gpioset process immediately - shell_exec with & backgrounds properly
+        // Start new gpioset process - shell_exec with & backgrounds properly
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
@@ -127,11 +143,111 @@ class LibGPIODv2 implements Commandable
             $value
         );
         
-        // shell_exec() properly handles & for backgrounding
         shell_exec($pidCmd);
 
         // Update cache immediately
         $this->cache($pinNumber, $level);
+        return $this;
+    }
+
+    /**
+     * Set multiple pin levels in a single gpioset command for better performance
+     * 
+     * @param array<int, Level> $pinLevels Array of pinNumber => Level
+     * @return self
+     */
+    public function setLevels(array $pinLevels): self
+    {
+        if (empty($pinLevels)) {
+            return $this;
+        }
+
+        $pidFiles = [];
+        $pinNumbers = array_keys($pinLevels);
+
+        // Kill existing gpioset processes for all pins
+        foreach ($pinNumbers as $pinNumber) {
+            $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
+            $pidFiles[] = $pidFile;
+            
+            if (file_exists($pidFile)) {
+                $oldPid = trim(@file_get_contents($pidFile));
+                if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                    posix_kill((int)$oldPid, SIGTERM);
+                    usleep(5000); // 5ms
+                    if (posix_kill((int)$oldPid, 0)) {
+                        posix_kill((int)$oldPid, SIGKILL);
+                    }
+                }
+                @unlink($pidFile);
+            }
+        }
+        
+        // Kill any batch processes that might include these pins
+        // Check all possible batch PID files that could contain these pins
+        $globPattern = "/tmp/pinout_gpioset_batch_*.pid";
+        $batchFiles = glob($globPattern);
+        if ($batchFiles) {
+            foreach ($batchFiles as $batchFile) {
+                // Extract pin numbers from filename
+                $filename = basename($batchFile, '.pid');
+                $filePins = explode('_', str_replace('pinout_gpioset_batch_', '', $filename));
+                $filePins = array_map('intval', $filePins);
+                
+                // If any pin matches, kill this batch process
+                if (array_intersect($pinNumbers, $filePins)) {
+                    $oldPid = trim(@file_get_contents($batchFile));
+                    if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                        posix_kill((int)$oldPid, SIGTERM);
+                        usleep(5000);
+                        if (posix_kill((int)$oldPid, 0)) {
+                            posix_kill((int)$oldPid, SIGKILL);
+                        }
+                    }
+                    @unlink($batchFile);
+                }
+            }
+        }
+        
+        // Kill individual gpioset processes for these pins
+        foreach ($pinNumbers as $pinNumber) {
+            shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
+        }
+
+        // Build single gpioset command with all pins: gpioset -c chip 20=1 21=0 22=1
+        $pinArgs = [];
+        foreach ($pinLevels as $pinNumber => $level) {
+            $pinArgs[] = "$pinNumber=" . $level->value;
+            // Update cache immediately
+            $this->cache($pinNumber, $level);
+        }
+        
+        $pinArgsStr = implode(' ', $pinArgs);
+        
+        // Create a single PID file for the batch process (sort pins for consistency)
+        $sortedPins = $pinNumbers;
+        sort($sortedPins);
+        $batchPidFile = "/tmp/pinout_gpioset_batch_" . implode('_', $sortedPins) . ".pid";
+        
+        // Start single gpioset process for all pins
+        $pidCmd = sprintf(
+            'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
+            $batchPidFile,
+            $this->gpioChip,
+            $pinArgsStr
+        );
+        
+        shell_exec($pidCmd);
+        
+        // Also create individual PID files pointing to the batch process PID
+        // (for backwards compatibility with individual setLevel calls)
+        if (file_exists($batchPidFile)) {
+            $batchPid = trim(@file_get_contents($batchPidFile));
+            foreach ($pidFiles as $pidFile) {
+                file_put_contents($pidFile, $batchPid);
+            }
+        }
+
         return $this;
     }
 
