@@ -41,12 +41,24 @@ class LibGPIOD implements Commandable
     {
         $chip = $this->gpioChip;
 
-        // Check if direction is output
+        // Check if direction is output - if so, return cached value
         $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
         $gpioinfo = @shell_exec($cmd);
 
-        if (str_contains($gpioinfo, 'output')) {
-            return $this->cache($pinNumber);
+        if ($gpioinfo && str_contains($gpioinfo, 'output')) {
+            // For output pins, check cache first (they're being held by gpioset)
+            try {
+                return $this->cache($pinNumber);
+            } catch (\Exception $e) {
+                // If no cached value, pin might be output but not set yet - default to LOW
+                return Level::LOW;
+            }
+        }
+
+        // Check cache for pins we've set as output (even if gpioinfo doesn't show it)
+        $cached = \Illuminate\Support\Facades\Cache::get("gpio.output.$pinNumber", null);
+        if ($cached !== null) {
+            return $cached;
         }
 
         // Input — safe to read
@@ -57,8 +69,7 @@ class LibGPIOD implements Commandable
         
         // Check for error messages in output
         if ($output === '' || str_contains($output, 'cannot find') || str_contains($output, 'error') || str_contains($output, 'Error')) {
-            // Pin might not be configured yet - return LOW as default for unconfigured pins
-            // This allows pins to be configured without errors
+            // Pin might not be configured yet or is being held - return LOW as default
             return Level::LOW;
         }
         
