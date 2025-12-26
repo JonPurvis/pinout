@@ -150,16 +150,17 @@ class LibGPIODv2 implements Commandable
         shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
         usleep(10000); // 10ms
 
-        // Start new gpioset process - use exec() which handles backgrounding better
+        // Start new gpioset process - double background to fully detach from PHP
+        // The outer & backgrounds the setsid command, ensuring PHP doesn't wait
         $pidCmd = sprintf(
-            'nohup setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
+            '(setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &) &',
             $pidFile,
             $this->gpioChip,
             $pinNumber,
             $value
         );
         
-        // exec() with output redirection - returns immediately
+        // Execute with all output redirected - returns immediately
         exec($pidCmd . ' >/dev/null 2>&1');
         
         // Don't wait for PID file - let it happen asynchronously
@@ -256,15 +257,15 @@ class LibGPIODv2 implements Commandable
         sort($sortedPins);
         $batchPidFile = "/tmp/pinout_gpioset_batch_" . implode('_', $sortedPins) . ".pid";
         
-        // Start single gpioset process for all pins - use exec() which handles backgrounding better
+        // Start single gpioset process for all pins - double background to fully detach from PHP
         $pidCmd = sprintf(
-            'nohup setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
+            '(setsid bash -c "echo \\$\\$ > %s; exec gpioset -c %s %s </dev/null >/dev/null 2>&1" &) &',
             escapeshellarg($batchPidFile),
             escapeshellarg($this->gpioChip),
             $pinArgsStr // Already space-separated arguments: "12=1 13=0 16=1"
         );
         
-        // exec() with output redirection - returns immediately
+        // Execute with all output redirected - returns immediately
         exec($pidCmd . ' >/dev/null 2>&1');
         
         // Don't wait for PID file - let it happen asynchronously
