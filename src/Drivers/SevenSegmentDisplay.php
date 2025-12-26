@@ -94,14 +94,39 @@ class SevenSegmentDisplay
         // Flip the hex values.
         $hex = ~$hex;
 
-        // Just use individual calls - simpler and more reliable
-        $this->pinA->setLevel($hex & 0x01 ? Level::HIGH : Level::LOW);
-        $this->pinB->setLevel($hex & 0x02 ? Level::HIGH : Level::LOW);
-        $this->pinC->setLevel($hex & 0x04 ? Level::HIGH : Level::LOW);
-        $this->pinD->setLevel($hex & 0x08 ? Level::HIGH : Level::LOW);
-        $this->pinE->setLevel($hex & 0x10 ? Level::HIGH : Level::LOW);
-        $this->pinF->setLevel($hex & 0x20 ? Level::HIGH : Level::LOW);
-        $this->pinG->setLevel($hex & 0x40 ? Level::HIGH : Level::LOW);
+        // Collect all pin levels for batch update
+        $pinLevels = [
+            $this->pinA->pinNumber => $hex & 0x01 ? Level::HIGH : Level::LOW,
+            $this->pinB->pinNumber => $hex & 0x02 ? Level::HIGH : Level::LOW,
+            $this->pinC->pinNumber => $hex & 0x04 ? Level::HIGH : Level::LOW,
+            $this->pinD->pinNumber => $hex & 0x08 ? Level::HIGH : Level::LOW,
+            $this->pinE->pinNumber => $hex & 0x10 ? Level::HIGH : Level::LOW,
+            $this->pinF->pinNumber => $hex & 0x20 ? Level::HIGH : Level::LOW,
+            $this->pinG->pinNumber => $hex & 0x40 ? Level::HIGH : Level::LOW,
+        ];
+
+        // Use batch method if available (LibGPIODv2), otherwise fall back to individual calls
+        $commandTool = app(\DanJohnson95\Pinout\Shell\Commandable::class);
+        if (method_exists($commandTool, 'setLevels')) {
+            $commandTool->setLevels($pinLevels);
+            
+            // Update pin objects to reflect new levels
+            foreach ($pinLevels as $pinNumber => $level) {
+                $pin = $this->getPinByNumber($pinNumber);
+                if ($pin) {
+                    $pin->level = $level;
+                }
+            }
+        } else {
+            // Fallback to individual calls for other drivers
+            $this->pinA->setLevel($pinLevels[$this->pinA->pinNumber]);
+            $this->pinB->setLevel($pinLevels[$this->pinB->pinNumber]);
+            $this->pinC->setLevel($pinLevels[$this->pinC->pinNumber]);
+            $this->pinD->setLevel($pinLevels[$this->pinD->pinNumber]);
+            $this->pinE->setLevel($pinLevels[$this->pinE->pinNumber]);
+            $this->pinF->setLevel($pinLevels[$this->pinF->pinNumber]);
+            $this->pinG->setLevel($pinLevels[$this->pinG->pinNumber]);
+        }
 
         return $this;
     }
