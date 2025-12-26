@@ -103,19 +103,17 @@ class LibGPIODv2 implements Commandable
         }
 
         // v2: Run in background to hold pin (gpioset holds pin until process exits)
-        // Use nohup and setsid to fully detach from parent, redirect all I/O
+        // Use setsid to create new session and fully detach from parent
         $cmd = sprintf(
-            'nohup setsid sh -c "gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" & echo $!',
+            '(setsid gpioset -c %s %d=%d </dev/null >/dev/null 2>&1 & echo $!) 2>/dev/null',
             $this->gpioChip,
             $pinNumber,
             $value
         );
 
         $pid = trim(shell_exec($cmd));
-        if ($pid) {
+        if ($pid && is_numeric($pid)) {
             file_put_contents($pidFile, $pid);
-            // Disown the process to fully detach from shell
-            shell_exec("disown $pid 2>/dev/null");
         }
 
         $this->cache($pinNumber, $level);
