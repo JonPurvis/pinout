@@ -113,17 +113,31 @@ class LibGPIOD implements Commandable
 
     public function setLevel(int $pinNumber, Level $level): self
     {
-        $chip = $this->gpioChip;
         $value = $level->value;
+        $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
 
-        $command = "gpioset {$this->chipArg()} $pinNumber=$value";
-        exec($command, $output, $exitCode);
-
-        if ($exitCode !== 0) {
-            throw new \Exception("Failed to set GPIO level on line $pinNumber. Exit code: $exitCode");
+        // Kill existing gpioset process for this pin
+        if (file_exists($pidFile)) {
+            $oldPid = trim(file_get_contents($pidFile));
+            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
+                posix_kill((int)$oldPid, SIGTERM);
+            }
+            @unlink($pidFile);
         }
 
-        // Flash level into session
+        // v2: Run in background to hold pin; v1: Exits immediately
+        $cmd = sprintf(
+            'setsid gpioset %s %d=%d >/dev/null 2>&1 & echo $!',
+            $this->chipArg(),
+            $pinNumber,
+            $value
+        );
+
+        $pid = trim(shell_exec($cmd));
+        if ($pid && $this->useChipFlag) {
+            file_put_contents($pidFile, $pid);
+        }
+
         $this->cache($pinNumber, $level);
         return $this;
     }
