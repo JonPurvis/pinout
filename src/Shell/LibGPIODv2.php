@@ -184,7 +184,7 @@ class LibGPIODv2 implements Commandable
         }
         
         // Kill any batch processes that might include these pins
-        // Check all possible batch PID files that could contain these pins
+        // Check all possible batch PID files and kill any that contain our pins
         $globPattern = "/tmp/pinout_gpioset_batch_*.pid";
         $batchFiles = glob($globPattern);
         if ($batchFiles) {
@@ -197,11 +197,14 @@ class LibGPIODv2 implements Commandable
                 // If any pin matches, kill this batch process
                 if (array_intersect($pinNumbers, $filePins)) {
                     $oldPid = trim(@file_get_contents($batchFile));
-                    if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
-                        posix_kill((int)$oldPid, SIGTERM);
-                        usleep(5000);
+                    if (is_numeric($oldPid)) {
                         if (posix_kill((int)$oldPid, 0)) {
-                            posix_kill((int)$oldPid, SIGKILL);
+                            posix_kill((int)$oldPid, SIGTERM);
+                            usleep(10000); // 10ms
+                            if (posix_kill((int)$oldPid, 0)) {
+                                posix_kill((int)$oldPid, SIGKILL);
+                                usleep(5000); // 5ms
+                            }
                         }
                     }
                     @unlink($batchFile);
@@ -211,8 +214,11 @@ class LibGPIODv2 implements Commandable
         
         // Kill individual gpioset processes for these pins
         foreach ($pinNumbers as $pinNumber) {
-            shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
+            shell_exec("pkill -9 -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
         }
+        
+        // Brief delay to ensure processes are killed before starting new batch
+        usleep(50000); // 50ms
 
         // Build single gpioset command with all pins: gpioset -c chip 20=1 21=0 22=1
         $pinArgs = [];
@@ -239,12 +245,23 @@ class LibGPIODv2 implements Commandable
         
         shell_exec($pidCmd);
         
+        // Wait for PID file to be created and read it
+        $attempts = 0;
+        while (!file_exists($batchPidFile) && $attempts < 10) {
+            usleep(10000); // 10ms
+            $attempts++;
+        }
+        
         // Also create individual PID files pointing to the batch process PID
         // (for backwards compatibility with individual setLevel calls)
         if (file_exists($batchPidFile)) {
             $batchPid = trim(@file_get_contents($batchPidFile));
-            foreach ($pidFiles as $pidFile) {
-                file_put_contents($pidFile, $batchPid);
+            if ($batchPid && is_numeric($batchPid)) {
+                foreach ($pidFiles as $pidFile) {
+                    file_put_contents($pidFile, $batchPid);
+                }
+                // Small delay to ensure process starts and pins are set
+                usleep(50000); // 50ms
             }
         }
 
