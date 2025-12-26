@@ -12,9 +12,29 @@ class LibGPIOD implements Commandable
 {
     protected ?string $gpioChip;
 
+    protected bool $useChipFlag;
+
     public function __construct()
     {
         $this->gpioChip = config('pinout.gpio_chip');
+        $this->useChipFlag = $this->requiresChipFlag();
+    }
+
+    /**
+     * Determine if libgpiod v2.x is installed and requires the -c flag
+     */
+    protected function requiresChipFlag(): bool
+    {
+        $versionOutput = shell_exec("gpioset --version 2>&1");
+        return str_contains($versionOutput, 'v2');
+    }
+
+    /**
+     * Returns the correct chip argument for CLI commands
+     */
+    protected function chipArg(): string
+    {
+        return $this->useChipFlag ? "-c {$this->gpioChip}" : $this->gpioChip;
     }
 
     public function getAll(array $pinNumbers): PinCollection
@@ -39,48 +59,15 @@ class LibGPIOD implements Commandable
 
     protected function getLevel(int $pinNumber): Level
     {
-        $chip = $this->gpioChip;
+        // Check if direction is output
+        $gpioinfo = shell_exec("gpioinfo {$this->chipArg()} | grep -E '^\\s*line\\s+$pinNumber:'");
 
-        // Check if direction is output - if so, return cached value
-        $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
-        $gpioinfo = @shell_exec($cmd);
-
-        if ($gpioinfo && str_contains($gpioinfo, 'output')) {
-            // For output pins, check cache first (they're being held by gpioset)
-            try {
-                return $this->cache($pinNumber);
-            } catch (\Exception $e) {
-                // If no cached value, pin might be output but not set yet - default to LOW
-                return Level::LOW;
-            }
-        }
-
-        // Check cache for pins we've set as output (even if gpioinfo doesn't show it)
-        $cached = \Illuminate\Support\Facades\Cache::get("gpio.output.$pinNumber", null);
-        if ($cached !== null) {
-            return $cached;
+        if (str_contains($gpioinfo, 'output')) {
+            return $this->cache($pinNumber);
         }
 
         // Input — safe to read
-        // Capture both stdout and stderr to see actual errors
-        $cmd = sprintf('gpioget -c %s %d 2>&1', $chip, $pinNumber);
-        $result = @shell_exec($cmd);
-        $output = $result ? trim($result) : '';
-        
-        // Check for error messages in output
-        if ($output === '' || str_contains($output, 'cannot find') || str_contains($output, 'error') || str_contains($output, 'Error')) {
-            // Pin might not be configured yet or is being held - return LOW as default
-            return Level::LOW;
-        }
-        
-        $level = $output;
-        
-        // Parse gpioget output format: "26"=active or "26"=inactive
-        if (str_contains($level, '=active') || preg_match('/"*\d+"*\s*=\s*active/i', $level)) {
-            $level = '1';
-        } elseif (str_contains($level, '=inactive') || preg_match('/"*\d+"*\s*=\s*inactive/i', $level)) {
-            $level = '0';
-        }
+        $level = trim(shell_exec("gpioget {$this->chipArg()} $pinNumber"));
 
         return match ($level) {
             "0" => Level::LOW,
@@ -93,8 +80,7 @@ class LibGPIOD implements Commandable
     {
         $chip = $this->gpioChip;
 
-        $cmd = "bash -c 'gpioinfo $chip 2>/dev/null | grep -E \"^\\\\s*line\\\\s+$pinNumber:\"'";
-        $gpioinfo = @shell_exec($cmd);
+        $gpioinfo = shell_exec("gpioinfo {$this->chipArg()} | grep -E '^\\s*line\\s+$pinNumber:'");
 
         if (str_contains($gpioinfo, 'output')) {
             return Func::OUTPUT;
@@ -110,7 +96,7 @@ class LibGPIOD implements Commandable
     ): self {
         if ($func === Func::INPUT) {
             $chip = $this->gpioChip;
-            @shell_exec("gpioget -c $chip $pinNumber 2>/dev/null");
+            shell_exec("gpioget {$this->chipArg()} $pinNumber");
             return $this;
         }
 
@@ -128,38 +114,17 @@ class LibGPIOD implements Commandable
     public function setLevel(int $pinNumber, Level $level): self
     {
         $chip = $this->gpioChip;
-        $value = $level === Level::HIGH ? 1 : 0;
+        $value = $level->value;
 
-        // Kill any existing gpioset process for this pin to avoid accumulation
-        $pidFile = "/tmp/pinout_gpioset_$pinNumber.pid";
-        if (file_exists($pidFile)) {
-            $oldPid = trim(file_get_contents($pidFile));
-            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
-                posix_kill((int)$oldPid, SIGTERM);
-            }
-            @unlink($pidFile);
+        $command = "gpioset {$this->chipArg()} $pinNumber=$value";
+        exec($command, $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new \Exception("Failed to set GPIO level on line $pinNumber. Exit code: $exitCode");
         }
 
-        // Use -c flag to specify chip, run in background and save PID
-        // gpioset holds the pin HIGH/LOW as long as the process runs
-        $cmd = sprintf(
-            'gpioset -c %s %d=%d >/dev/null 2>&1 & echo $!',
-            $chip,
-            $pinNumber,
-            $value
-        );
-
-        $pid = trim(shell_exec($cmd));
-        if ($pid) {
-            file_put_contents($pidFile, $pid);
-        }
-
-        // Cache the level we set
+        // Flash level into session
         $this->cache($pinNumber, $level);
-        
-        // Small delay to ensure command starts
-        usleep(10000); // 10ms
-
         return $this;
     }
 
