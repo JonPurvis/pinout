@@ -104,8 +104,17 @@ class LibGPIODv2 implements Commandable
         // Kill existing gpioset process for this pin
         if (file_exists($pidFile)) {
             $oldPid = trim(file_get_contents($pidFile));
-            if (is_numeric($oldPid) && posix_kill((int)$oldPid, 0)) {
-                posix_kill((int)$oldPid, SIGTERM);
+            if (is_numeric($oldPid)) {
+                // Try SIGTERM first (graceful)
+                if (posix_kill((int)$oldPid, 0)) {
+                    posix_kill((int)$oldPid, SIGTERM);
+                    usleep(50000); // 50ms
+                    // If still running, force kill
+                    if (posix_kill((int)$oldPid, 0)) {
+                        posix_kill((int)$oldPid, SIGKILL);
+                        usleep(10000); // 10ms
+                    }
+                }
             }
             @unlink($pidFile);
         }
@@ -122,6 +131,8 @@ class LibGPIODv2 implements Commandable
         $pid = trim(shell_exec($cmd));
         if ($pid && is_numeric($pid)) {
             file_put_contents($pidFile, $pid);
+            // Small delay to ensure process starts
+            usleep(10000); // 10ms
         }
 
         $this->cache($pinNumber, $level);
