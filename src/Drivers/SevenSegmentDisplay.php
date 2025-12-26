@@ -85,7 +85,25 @@ class SevenSegmentDisplay
 
     public function clearDisplay(): self
     {
-        $this->pins->turnOff();
+        // Use batch method if available for simultaneous clearing
+        $commandTool = app(\DanJohnson95\Pinout\Shell\Commandable::class);
+        if (method_exists($commandTool, 'setLevels')) {
+            // Build pin levels array with all pins set to LOW
+            $pinLevels = [];
+            foreach ($this->pins as $pin) {
+                $pinLevels[$pin->pinNumber] = Level::LOW;
+            }
+            $commandTool->setLevels($pinLevels);
+            
+            // Update pin objects
+            foreach ($this->pins as $pin) {
+                $pin->level = Level::LOW;
+            }
+        } else {
+            // Fallback to individual calls
+            $this->pins->turnOff();
+        }
+
         return $this;
     }
 
