@@ -19,7 +19,10 @@ class ServiceProvider extends BaseServiceProvider
             __DIR__ . '/Config/pinout.php' => config_path('pinout.php'),
         ], 'config');
 
-        $this->app->bind(Commandable::class, config('pinout.sys_file'));
+        $this->app->bind(Commandable::class, function ($app) {
+            $class = config('pinout.sys_file', SysFile::class);
+            return $app->make($class);
+        });
     }
 
     public function boot()
