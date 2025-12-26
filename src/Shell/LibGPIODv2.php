@@ -236,32 +236,41 @@ class LibGPIODv2 implements Commandable
         $batchPidFile = "/tmp/pinout_gpioset_batch_" . implode('_', $sortedPins) . ".pid";
         
         // Start single gpioset process for all pins
-        $pidCmd = sprintf(
-            'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
-            $batchPidFile,
-            $this->gpioChip,
-            $pinArgsStr
+        // Start the process in background
+        $cmd = sprintf(
+            'setsid nohup gpioset -c %s %s </dev/null >/dev/null 2>&1 &',
+            escapeshellarg($this->gpioChip),
+            $pinArgsStr // Already space-separated arguments: "12=1 13=0 16=1"
         );
         
-        shell_exec($pidCmd);
+        shell_exec($cmd);
         
-        // Wait for PID file to be created and read it
-        $attempts = 0;
-        while (!file_exists($batchPidFile) && $attempts < 10) {
-            usleep(10000); // 10ms
-            $attempts++;
-        }
+        // Wait for process to start, then find it by matching the command pattern
+        usleep(100000); // 100ms for process to start
         
-        // Also create individual PID files pointing to the batch process PID
-        // (for backwards compatibility with individual setLevel calls)
-        if (file_exists($batchPidFile)) {
-            $batchPid = trim(@file_get_contents($batchPidFile));
-            if ($batchPid && is_numeric($batchPid)) {
+        // Find the gpioset process that matches our batch command
+        // Look for a process containing the first pin number and chip
+        $firstPin = $pinNumbers[0];
+        $pidOutput = shell_exec("pgrep -f 'gpioset.*-c {$this->gpioChip}.*$firstPin=' 2>/dev/null | head -1");
+        $batchPid = trim($pidOutput ?: '');
+        
+        if ($batchPid && is_numeric($batchPid) && posix_kill((int)$batchPid, 0)) {
+            // Verify it's actually our batch process by checking if it has multiple pins
+            // (individual processes would only have one pin)
+            $procCmdline = @file_get_contents("/proc/$batchPid/cmdline");
+            $pinMatchCount = 0;
+            foreach ($pinNumbers as $pinNum) {
+                if ($procCmdline && strpos($procCmdline, "$pinNum=") !== false) {
+                    $pinMatchCount++;
+                }
+            }
+            
+            // If it matches multiple pins, it's our batch process
+            if ($pinMatchCount >= 2) {
+                file_put_contents($batchPidFile, $batchPid);
                 foreach ($pidFiles as $pidFile) {
                     file_put_contents($pidFile, $batchPid);
                 }
-                // Small delay to ensure process starts and pins are set
-                usleep(50000); // 50ms
             }
         }
 
