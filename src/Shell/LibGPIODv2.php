@@ -98,9 +98,20 @@ class LibGPIODv2 implements Commandable
             return $this;
         }
 
+        // If no level specified and pin is already OUTPUT, preserve current level
+        if ($level === null) {
+            try {
+                $currentLevel = $this->getLevel($pinNumber);
+                $level = $currentLevel;
+            } catch (\Exception $e) {
+                // If we can't get current level, default to LOW
+                $level = Level::LOW;
+            }
+        }
+
         return $this->setLevel(
             $pinNumber,
-            $level ?? Level::LOW
+            $level
         );
     }
 
@@ -133,7 +144,7 @@ class LibGPIODv2 implements Commandable
         shell_exec("pkill -f 'gpioset.*-c {$this->gpioChip}.*$pinNumber=' 2>/dev/null");
         usleep(10000); // 10ms
 
-        // Start new gpioset process - shell_exec with & backgrounds properly
+        // Start new gpioset process - fully detached using proc_open for clean exit
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %d=%d </dev/null >/dev/null 2>&1" &',
             $pidFile,
@@ -142,22 +153,28 @@ class LibGPIODv2 implements Commandable
             $value
         );
         
-        shell_exec($pidCmd);
+        // Use proc_open and immediately close to fully detach from PHP process
+        $descriptorspec = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
         
-        // Wait for PID file to be created and read it
-        $attempts = 0;
-        while (!file_exists($pidFile) && $attempts < 10) {
-            usleep(10000); // 10ms
-            $attempts++;
-        }
-        
-        if (file_exists($pidFile)) {
-            $pid = trim(@file_get_contents($pidFile));
-            if ($pid && is_numeric($pid) && $pid > 0) {
-                // Small delay to ensure process starts and pin state changes
-                usleep(50000); // 50ms
+        $process = proc_open($pidCmd, $descriptorspec, $pipes);
+        if (is_resource($process)) {
+            // Close pipes immediately
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
             }
+            // Close process immediately - don't wait
+            proc_close($process);
         }
+        
+        // Don't wait for PID file - let it happen asynchronously
+        // This prevents blocking Tinker exit. The process will start in background.
+        // We'll check for PID file on next access if needed.
 
         // Update cache immediately
         $this->cache($pinNumber, $level);
@@ -250,7 +267,7 @@ class LibGPIODv2 implements Commandable
         $batchPidFile = "/tmp/pinout_gpioset_batch_" . implode('_', $sortedPins) . ".pid";
         
         // Start single gpioset process for all pins
-        // Use the same reliable approach as setLevel() but for multiple pins
+        // Use proc_open for full detachment from PHP process
         $pidCmd = sprintf(
             'setsid bash -c "echo \\$\\$ > %s; exec nohup gpioset -c %s %s </dev/null >/dev/null 2>&1" &',
             escapeshellarg($batchPidFile),
@@ -258,26 +275,28 @@ class LibGPIODv2 implements Commandable
             $pinArgsStr // Already space-separated arguments: "12=1 13=0 16=1"
         );
         
-        shell_exec($pidCmd);
+        // Use proc_open and immediately close to fully detach from PHP process
+        $descriptorspec = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', '/dev/null', 'w'],
+            2 => ['file', '/dev/null', 'w'],
+        ];
         
-        // Wait for PID file to be created and read it
-        $attempts = 0;
-        while (!file_exists($batchPidFile) && $attempts < 10) {
-            usleep(10000); // 10ms
-            $attempts++;
-        }
-        
-        // Create individual PID files pointing to the batch process PID
-        if (file_exists($batchPidFile)) {
-            $batchPid = trim(@file_get_contents($batchPidFile));
-            if ($batchPid && is_numeric($batchPid) && $batchPid > 0) {
-                foreach ($pidFiles as $pidFile) {
-                    file_put_contents($pidFile, $batchPid);
+        $process = proc_open($pidCmd, $descriptorspec, $pipes);
+        if (is_resource($process)) {
+            // Close pipes immediately
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
                 }
-                // Small delay to ensure process starts and pins are set
-                usleep(50000); // 50ms
             }
+            // Close process immediately - don't wait
+            proc_close($process);
         }
+        
+        // Don't wait for PID file - let it happen asynchronously
+        // This prevents blocking Tinker exit. The process will start in background.
+        // PID files will be created asynchronously by the background process.
 
         return $this;
     }
